@@ -9,110 +9,116 @@ on:
     paths-ignore:
     - LICENSE
     - README.md
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a GitHub release'
+        type: boolean
+        default: true
+
+env:
+  SM_BRANCH: 1.12-dev
+  MMS_BRANCH: 1.12-dev
+  AMBUILD_REF: 01212cb57c96561f664b6dfb2ee10e66de6f81e4
 
 jobs:
   build:
-    name: build with sm${{ matrix.sm_version }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-20.04
-          #- ubuntu-18.04
-          - windows-latest
-          
-        sm_version:
-          - "1.10"
-          
-        include:
-          - sm_version: "1.10"
-            branch: "1.10-dev"
-            
-          - os: ubuntu-20.04
-            
-          #- os: ubuntu-18.04
-            
-          - os: windows-latest
-            
+    name: build (linux x86 + x86_64)
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+
     steps:
-      - name: Prepare env
-        shell: bash
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          
-      - name: Install (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y clang g++-multilib
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
-          
-      - name: Add msbuild to PATH (Windows)
-        if: runner.os == 'Windows'
-        uses: microsoft/setup-msbuild@v1.0.2
-        
-      - name: Install (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          :: See https://github.com/microsoft/vswhere/wiki/Find-VC
-          for /f "usebackq delims=*" %%i in (`vswhere -latest -property installationPath`) do (
-            call "%%i"\Common7\Tools\vsdevcmd.bat -arch=x86 -host_arch=x64
-          )
-          
-          :: Loop over all environment variables and make them global.
-          for /f "delims== tokens=1,2" %%a in ('set') do (
-            echo>>"%GITHUB_ENV%" %%a=%%b
-          )
-          
+          dpkg --add-architecture i386
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git file clang g++-multilib python3 python3-pip python3-setuptools
+
       - name: Checking out SourceMod
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: alliedmodders/sourcemod
-          ref: ${{ matrix.branch }}
-          path: sourcemod-${{ matrix.sm_version }}
+          ref: ${{ env.SM_BRANCH }}
+          path: sourcemod
           submodules: recursive
-          
+
       - name: Checking out MM:Source
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: alliedmodders/metamod-source
-          ref: ${{ matrix.branch }}
-          path: metamod-${{ matrix.sm_version }}
-          
+          ref: ${{ env.MMS_BRANCH }}
+          path: metamod
+
       - name: Checking out AMBuild
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: alliedmodders/ambuild
+          ref: ${{ env.AMBUILD_REF }}
           path: ambuild
-          
-      - name: Setting up Python
-        uses: actions/setup-python@v2
-        
-      - name: Setting up ambuild
-        working-directory: ambuild
-        run: |
-          python -m pip install setuptools wheel
-          python setup.py install
-          
+
+      - name: Installing AMBuild
+        run: pip3 install ./ambuild
+
       - name: Checking out own repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           path: sm_closestpos
 
-      - name: Compiling sm_closestpos files
+      - name: Compiling sm_closestpos
         working-directory: sm_closestpos
+        env:
+          CC: clang
+          CXX: clang++
         run: |
-          mkdir build
-          cd build
-          python ../configure.py --enable-optimize --sm-path="${{ github.workspace }}/sourcemod-${{ matrix.sm_version }}" --mms-path="${{ github.workspace }}/metamod-${{ matrix.sm_version }}"
-          ambuild
-          
+          for arch in x86 x86_64; do
+            mkdir "build-$arch"
+            (
+              cd "build-$arch"
+              python3 ../configure.py --arch "$arch" --enable-optimize --sm-path="$GITHUB_WORKSPACE/sourcemod" --mms-path="$GITHUB_WORKSPACE/metamod"
+              ambuild
+            )
+          done
+          mkdir package
+          cp -r build-x86/package/. package/
+          cp -r build-x86_64/package/. package/
+
+      - name: Checking binaries
+        working-directory: sm_closestpos/package/addons/sourcemod/extensions
+        run: |
+          for f in closestpos.ext.so x64/closestpos.ext.so; do
+            echo "$f: $(file -b "$f" | cut -d, -f1,2), needs $(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+          done
+
       - name: Uploading package
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
-          name: sm_closestpos-sm${{ matrix.sm_version }}-${{ matrix.os }}-${{ env.GITHUB_SHA_SHORT }}
-          path: sm_closestpos/build/package
+          name: sm_closestpos-linux
+          path: sm_closestpos/package
+
+  release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Downloading package
+        uses: actions/download-artifact@v4
+        with:
+          name: sm_closestpos-linux
+          path: package
+
+      - name: Publishing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-$(date -u +%Y-%m-%d)-${{ github.run_number }}"
+          (cd package && zip -r "../sm_closestpos-linux-$tag.zip" addons)
+          gh release create "$tag" "sm_closestpos-linux-$tag.zip" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "$tag" \
+            --notes "Linux x86 (extensions/) and x86_64 (extensions/x64/) builds of ${{ github.sha }} against SourceMod/MM:S ${{ env.SM_BRANCH }}, built on Ubuntu 22.04 (glibc 2.35 baseline)."

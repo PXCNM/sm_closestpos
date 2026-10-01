@@ -152,7 +152,6 @@ class ExtensionConfig(object):
       '-Wno-switch',
       '-Wno-array-bounds',
       '-msse',
-      '-m32',
       '-fvisibility=hidden',
     ]
     cxx.cxxflags += [
@@ -163,7 +162,12 @@ class ExtensionConfig(object):
       '-Wno-overloaded-virtual',
       '-fvisibility-inlines-hidden',
     ]
-    cxx.linkflags += ['-m32']
+    if builder.options.arch == 'x86_64':
+      cxx.cflags += ['-m64', '-fPIC']
+      cxx.linkflags += ['-m64']
+    else:
+      cxx.cflags += ['-m32']
+      cxx.linkflags += ['-m32']
 
     have_gcc = cxx.vendor == 'gcc'
     have_clang = cxx.vendor == 'clang'

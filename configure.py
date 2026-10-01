@@ -12,6 +12,8 @@ builder.options.add_option('--sm-path', type=str, dest='sm_path', default=None,
                        help='Path to SourceMod')
 builder.options.add_option('--enable-debug', action='store_const', const='1', dest='debug',
                        help='Enable debugging symbols')
+builder.options.add_option('--arch', type='choice', choices=['x86', 'x86_64'], dest='arch', default='x86',
+                       help='Target architecture: x86 (default) or x86_64')
 builder.options.add_option('--enable-optimize', action='store_const', const='1', dest='opt',
                        help='Enable optimization')
 
